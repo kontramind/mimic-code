@@ -32,7 +32,7 @@
 --   next_hadm_id            : Next hospital admission ID (if any)
 --   next_icu_intime         : Next ICU admission timestamp (if any)
 --   days_to_next_icu        : Days from discharge to next ICU admission
---   readmission_30d         : Binary flag (1 = patient will be readmitted within 30 days)
+--   leads_to_readmission_30d: Binary flag (1 = patient will be readmitted within 30 days)
 --   is_last_icu_stay        : Flag indicating this is patient's final ICU stay
 --
 --   BACKWARD-LOOKING (identify if current stay is a readmission):
@@ -113,7 +113,7 @@ SELECT
         WHEN next_icu_intime IS NULL THEN 0  -- No subsequent ICU stay
         WHEN DATE_DIFF('second', icu_outtime, next_icu_intime) / 24.0 / 60.0 / 60.0 <= 30 THEN 1
         ELSE 0
-    END AS readmission_30d,
+    END AS leads_to_readmission_30d,
 
     is_last_icu_stay,
 
@@ -164,7 +164,7 @@ ORDER BY icustay_id;
 --         WHEN next_hadm_id = hadm_id THEN 0  -- Same hospital admission = transfer, not readmission
 --         WHEN DATE_DIFF('second', icu_outtime, next_icu_intime) / 24.0 / 60.0 / 60.0 <= 30 THEN 1
 --         ELSE 0
---     END AS readmission_30d_strict
+--     END AS leads_to_readmission_30d_strict
 -- FROM icu_with_next;
 
 
@@ -177,11 +177,11 @@ ORDER BY icustay_id;
 
 -- Example 2: Count readmissions (FORWARD-LOOKING)
 -- SELECT
---     readmission_30d,
+--     leads_to_readmission_30d,
 --     COUNT(*) as n_stays,
 --     ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) as percentage
 -- FROM icu_readmission_30d
--- GROUP BY readmission_30d;
+-- GROUP BY leads_to_readmission_30d;
 
 -- Example 2b: Count readmissions (BACKWARD-LOOKING)
 -- SELECT
@@ -193,22 +193,22 @@ ORDER BY icustay_id;
 
 -- Example 2c: Compare BOTH flags
 -- SELECT
---     readmission_30d AS will_return,
+--     leads_to_readmission_30d AS will_return,
 --     is_readmission_30d AS is_return,
 --     COUNT(*) as n_stays
 -- FROM icu_readmission_30d
--- GROUP BY readmission_30d, is_readmission_30d
--- ORDER BY readmission_30d, is_readmission_30d;
+-- GROUP BY leads_to_readmission_30d, is_readmission_30d
+-- ORDER BY leads_to_readmission_30d, is_readmission_30d;
 
 -- Example 3: Exclude last/first ICU stays for accurate rates
 -- Forward-looking: exclude last stays (no follow-up possible)
 -- SELECT
---     readmission_30d,
+--     leads_to_readmission_30d,
 --     COUNT(*) as n_stays,
 --     ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) as pct
 -- FROM icu_readmission_30d
 -- WHERE is_last_icu_stay = 0
--- GROUP BY readmission_30d;
+-- GROUP BY leads_to_readmission_30d;
 
 -- Backward-looking: exclude first stays (no prior admission)
 -- SELECT
@@ -227,7 +227,7 @@ ORDER BY icustay_id;
 --         WHEN ia.age < 90 THEN '65-89'
 --         ELSE '90+'
 --     END AS age_category,
---     ir.readmission_30d,
+--     ir.leads_to_readmission_30d,
 --     COUNT(*) as n_stays,
 --     ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (PARTITION BY
 --         CASE
@@ -263,7 +263,7 @@ ORDER BY icustay_id;
 -- SELECT
 --     ir.icustay_id,
 --     ir.subject_id,
---     ir.readmission_30d,
+--     ir.leads_to_readmission_30d,
 --     ir.days_to_next_icu,
 --     adm.admission_type,
 --     adm.ethnicity,
@@ -282,7 +282,7 @@ ORDER BY icustay_id;
 --     ia.gender,
 --     ia.icu_los_days,
 --     ia.icustay_num,
---     ir.readmission_30d,
+--     ir.leads_to_readmission_30d,
 --     ir.days_to_next_icu,
 --     ir.is_last_icu_stay
 -- FROM icu_age ia
@@ -292,7 +292,7 @@ ORDER BY icustay_id;
 -- Example 8: Readmission rate by ICU stay sequence
 -- SELECT
 --     ia.icustay_num,
---     SUM(ir.readmission_30d) as readmissions,
+--     SUM(ir.leads_to_readmission_30d) as readmissions,
 --     COUNT(*) as total_stays,
 --     ROUND(100.0 * SUM(ir.readmission_30d) / COUNT(*), 2) as readmission_rate_pct
 -- FROM icu_readmission_30d ir
@@ -309,7 +309,7 @@ ORDER BY icustay_id;
 -- Query 1: Overall readmission statistics
 -- SELECT
 --     COUNT(*) as total_icu_stays,
---     SUM(readmission_30d) as readmissions_30d,
+--     SUM(leads_to_readmission_30d) as readmissions_30d,
 --     ROUND(100.0 * SUM(readmission_30d) / COUNT(*), 2) as readmission_rate_pct,
 --     SUM(is_last_icu_stay) as last_icu_stays,
 --     COUNT(*) - SUM(is_last_icu_stay) as icu_stays_at_risk
@@ -318,7 +318,7 @@ ORDER BY icustay_id;
 -- Query 2: Readmission rate excluding last stays (more accurate)
 -- SELECT
 --     COUNT(*) as icu_stays_at_risk,
---     SUM(readmission_30d) as readmissions_30d,
+--     SUM(leads_to_readmission_30d) as readmissions_30d,
 --     ROUND(100.0 * SUM(readmission_30d) / COUNT(*), 2) as readmission_rate_pct,
 --     ROUND(AVG(days_to_next_icu), 2) as mean_days_to_readmit,
 --     ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY days_to_next_icu), 2) as median_days_to_readmit
@@ -333,7 +333,7 @@ ORDER BY icustay_id;
 --         ELSE 'No next ICU stay'
 --     END AS readmission_type,
 --     COUNT(*) as n_stays,
---     SUM(readmission_30d) as n_readmissions_30d
+--     SUM(leads_to_readmission_30d) as n_readmissions_30d
 -- FROM icu_readmission_30d
 -- GROUP BY readmission_type;
 
@@ -350,7 +350,7 @@ ORDER BY icustay_id;
 -- SELECT
 --     subject_id,
 --     COUNT(*) as total_icu_stays,
---     SUM(readmission_30d) as n_readmissions_30d,
+--     SUM(leads_to_readmission_30d) as n_readmissions_30d,
 --     ROUND(100.0 * SUM(readmission_30d) / COUNT(*), 2) as personal_readmission_rate
 -- FROM icu_readmission_30d
 -- WHERE is_last_icu_stay = 0
