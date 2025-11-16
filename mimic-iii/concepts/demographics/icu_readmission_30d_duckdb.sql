@@ -26,12 +26,22 @@
 --   hadm_id                 : Current hospital admission
 --   icu_intime              : ICU admission timestamp
 --   icu_outtime             : ICU discharge timestamp
+--
+--   FORWARD-LOOKING (predict future readmission):
 --   next_icustay_id         : Next ICU stay ID (if any)
 --   next_hadm_id            : Next hospital admission ID (if any)
 --   next_icu_intime         : Next ICU admission timestamp (if any)
 --   days_to_next_icu        : Days from discharge to next ICU admission
---   readmission_30d         : Binary flag (1 = readmitted within 30 days)
+--   readmission_30d         : Binary flag (1 = patient will be readmitted within 30 days)
 --   is_last_icu_stay        : Flag indicating this is patient's final ICU stay
+--
+--   BACKWARD-LOOKING (identify if current stay is a readmission):
+--   prev_icustay_id         : Previous ICU stay ID (if any)
+--   prev_hadm_id            : Previous hospital admission ID (if any)
+--   prev_icu_outtime        : Previous ICU discharge timestamp (if any)
+--   days_from_prev_icu      : Days from previous ICU discharge to this admission
+--   is_readmission_30d      : Binary flag (1 = this stay is a readmission within 30 days)
+--   is_first_icu_stay       : Flag indicating this is patient's first ICU stay
 
 -- =====================================================================
 -- CREATE MATERIALIZED TABLE (Recommended)
@@ -39,7 +49,7 @@
 
 DROP TABLE IF EXISTS icu_readmission_30d;
 CREATE TABLE icu_readmission_30d AS
-WITH icu_with_next AS (
+WITH icu_stays_with_neighbors AS (
     SELECT
         ie.icustay_id,
         ie.subject_id,
@@ -47,17 +57,32 @@ WITH icu_with_next AS (
         ie.intime AS icu_intime,
         ie.outtime AS icu_outtime,
 
-        -- Get next ICU stay for same patient using LEAD window function
+        -- ================================================================
+        -- FORWARD-LOOKING: Get next ICU stay (for predicting readmission)
+        -- ================================================================
         LEAD(ie.icustay_id) OVER (PARTITION BY ie.subject_id ORDER BY ie.intime) AS next_icustay_id,
         LEAD(ie.hadm_id) OVER (PARTITION BY ie.subject_id ORDER BY ie.intime) AS next_hadm_id,
         LEAD(ie.intime) OVER (PARTITION BY ie.subject_id ORDER BY ie.intime) AS next_icu_intime,
 
-        -- Flag to identify last ICU stay for each patient
+        -- ================================================================
+        -- BACKWARD-LOOKING: Get previous ICU stay (for identifying readmissions)
+        -- ================================================================
+        LAG(ie.icustay_id) OVER (PARTITION BY ie.subject_id ORDER BY ie.intime) AS prev_icustay_id,
+        LAG(ie.hadm_id) OVER (PARTITION BY ie.subject_id ORDER BY ie.intime) AS prev_hadm_id,
+        LAG(ie.outtime) OVER (PARTITION BY ie.subject_id ORDER BY ie.intime) AS prev_icu_outtime,
+
+        -- ================================================================
+        -- Position flags
+        -- ================================================================
         CASE
             WHEN LEAD(ie.icustay_id) OVER (PARTITION BY ie.subject_id ORDER BY ie.intime) IS NULL
-            THEN 1
-            ELSE 0
-        END AS is_last_icu_stay
+            THEN 1 ELSE 0
+        END AS is_last_icu_stay,
+
+        CASE
+            WHEN LAG(ie.icustay_id) OVER (PARTITION BY ie.subject_id ORDER BY ie.intime) IS NULL
+            THEN 1 ELSE 0
+        END AS is_first_icu_stay
 
     FROM icustays ie
 )
@@ -67,27 +92,56 @@ SELECT
     hadm_id,
     icu_intime,
     icu_outtime,
+
+    -- ====================================================================
+    -- FORWARD-LOOKING VARIABLES (Predict: "Will this patient return?")
+    -- ====================================================================
     next_icustay_id,
     next_hadm_id,
     next_icu_intime,
 
-    -- Calculate days from ICU discharge to next ICU admission
+    -- Days from THIS discharge to NEXT admission
     CASE
         WHEN next_icu_intime IS NOT NULL
         THEN DATE_DIFF('second', icu_outtime, next_icu_intime) / 24.0 / 60.0 / 60.0
         ELSE NULL
     END AS days_to_next_icu,
 
-    -- 30-day readmission flag (1 = readmitted within 30 days)
+    -- FORWARD: Will this stay lead to a readmission within 30 days?
+    -- Use case: At discharge, predict if patient will return
     CASE
         WHEN next_icu_intime IS NULL THEN 0  -- No subsequent ICU stay
         WHEN DATE_DIFF('second', icu_outtime, next_icu_intime) / 24.0 / 60.0 / 60.0 <= 30 THEN 1
         ELSE 0
     END AS readmission_30d,
 
-    is_last_icu_stay
+    is_last_icu_stay,
 
-FROM icu_with_next
+    -- ====================================================================
+    -- BACKWARD-LOOKING VARIABLES (Identify: "Is this stay a readmission?")
+    -- ====================================================================
+    prev_icustay_id,
+    prev_hadm_id,
+    prev_icu_outtime,
+
+    -- Days from PREVIOUS discharge to THIS admission
+    CASE
+        WHEN prev_icu_outtime IS NOT NULL
+        THEN DATE_DIFF('second', prev_icu_outtime, icu_intime) / 24.0 / 60.0 / 60.0
+        ELSE NULL
+    END AS days_from_prev_icu,
+
+    -- BACKWARD: Is this stay a readmission within 30 days of previous discharge?
+    -- Use case: Identify which stays are readmissions for analysis
+    CASE
+        WHEN prev_icu_outtime IS NULL THEN 0  -- No previous ICU stay (first admission)
+        WHEN DATE_DIFF('second', prev_icu_outtime, icu_intime) / 24.0 / 60.0 / 60.0 <= 30 THEN 1
+        ELSE 0
+    END AS is_readmission_30d,
+
+    is_first_icu_stay
+
+FROM icu_stays_with_neighbors
 ORDER BY icustay_id;
 
 
@@ -121,7 +175,7 @@ ORDER BY icustay_id;
 -- Example 1: Simple query - all ICU stays with readmission status
 -- SELECT * FROM icu_readmission_30d LIMIT 10;
 
--- Example 2: Count readmissions
+-- Example 2: Count readmissions (FORWARD-LOOKING)
 -- SELECT
 --     readmission_30d,
 --     COUNT(*) as n_stays,
@@ -129,13 +183,41 @@ ORDER BY icustay_id;
 -- FROM icu_readmission_30d
 -- GROUP BY readmission_30d;
 
--- Example 3: Exclude last ICU stays (can't be readmitted if last stay)
+-- Example 2b: Count readmissions (BACKWARD-LOOKING)
+-- SELECT
+--     is_readmission_30d,
+--     COUNT(*) as n_stays,
+--     ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) as percentage
+-- FROM icu_readmission_30d
+-- GROUP BY is_readmission_30d;
+
+-- Example 2c: Compare BOTH flags
+-- SELECT
+--     readmission_30d AS will_return,
+--     is_readmission_30d AS is_return,
+--     COUNT(*) as n_stays
+-- FROM icu_readmission_30d
+-- GROUP BY readmission_30d, is_readmission_30d
+-- ORDER BY readmission_30d, is_readmission_30d;
+
+-- Example 3: Exclude last/first ICU stays for accurate rates
+-- Forward-looking: exclude last stays (no follow-up possible)
 -- SELECT
 --     readmission_30d,
---     COUNT(*) as n_stays
+--     COUNT(*) as n_stays,
+--     ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) as pct
 -- FROM icu_readmission_30d
 -- WHERE is_last_icu_stay = 0
 -- GROUP BY readmission_30d;
+
+-- Backward-looking: exclude first stays (no prior admission)
+-- SELECT
+--     is_readmission_30d,
+--     COUNT(*) as n_stays,
+--     ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) as pct
+-- FROM icu_readmission_30d
+-- WHERE is_first_icu_stay = 0
+-- GROUP BY is_readmission_30d;
 
 -- Example 4: Join with icu_age table for age-stratified analysis
 -- SELECT
