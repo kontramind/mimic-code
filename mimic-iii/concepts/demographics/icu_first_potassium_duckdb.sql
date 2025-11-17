@@ -18,16 +18,32 @@
 --   - Uses TABLE (not VIEW) for better performance and reusability
 --   - No filters by default - includes all ICU stays for maximum flexibility
 --   - Tracks ITEMID to identify measurement source (chemistry vs blood gas)
---   - NULL values indicate no potassium measurement during ICU stay
---   - Allows measurements from 6 hours BEFORE admission (captures baseline labs)
+--   - NULL values indicate no potassium measurement during the defined time window
 --   - Uses labevents table (laboratory values, not vital signs)
 --   - Includes BOTH chemistry panel and blood gas potassium measurements
+--   - Part of routine chemistry panel (see also: Creatinine, BUN tables)
 --
 -- Unit of Analysis: ICU stays (icustay_id)
 --   - Each ICU stay is analyzed independently
 --   - One patient can have multiple hospital admissions
 --   - One hospital admission can have multiple ICU stays
 --   - We find the "first" measurement relative to EACH ICU stay's admission time
+--
+-- DECISION: Time Window from "intime - 6 hours" to "outtime" (ICU Stay Bounded)
+--   Potassium is a ROUTINE lab, measured frequently in ICU (~1M measurements).
+--   We use a bounded window specific to each ICU stay:
+--
+--   Rationale:
+--   - We want the ICU admission baseline (or immediately preceding value)
+--   - Start: intime - 6 hours captures pre-ICU labs (ED, floor) that reflect admission state
+--   - End: outtime ensures we only capture labs from THIS ICU stay, preventing contamination
+--   - Without outtime bound, joining on subject_id could capture labs from future ICU stays
+--   - This provides clean temporal boundaries for each ICU episode
+--
+--   Implementation:
+--   - Join on subject_id (routine lab approach)
+--   - Order by charttime (first chronologically within window)
+--   - Bounded to [intime - 6h, outtime] to prevent inter-stay contamination
 --
 -- DECISION: Multiple ITEMIDs for Potassium
 --   We include BOTH potassium measurement sources:
@@ -95,9 +111,13 @@ WITH potassium_measurements AS (
     -- =========================================================================
     -- TIME WINDOW - Edit to adjust temporal filtering
     -- =========================================================================
-    -- Allow measurements from 6 hours BEFORE ICU admission to capture baseline
-    -- This is clinically relevant as labs are often drawn pre-admission
-    AND le.charttime >= ie.intime - INTERVAL '6' HOUR
+    -- IMPORTANT: Bounded to specific ICU stay to prevent contamination
+    AND le.charttime >= ie.intime - INTERVAL '6' HOUR  -- Start: 6h before ICU admission
+    AND le.charttime <= ie.outtime                     -- End: ICU discharge (prevents future stay contamination)
+    -- This ensures we capture:
+    --   1. Pre-ICU labs from ED/floor (admission baseline)
+    --   2. Labs during ICU stay
+    --   3. ONLY from THIS specific ICU stay (no contamination from future stays)
     -- =========================================================================
 )
 SELECT
@@ -105,14 +125,16 @@ SELECT
     ie.subject_id,
     ie.hadm_id,
     ie.intime AS icu_intime,
+    ie.outtime AS icu_outtime,
 
-    -- First potassium measurement
+    -- First potassium measurement (within ICU stay bounded window)
     pm.valuenum AS potassium_first,
     pm.charttime AS potassium_first_charttime,
     pm.itemid AS potassium_first_itemid,
 
     -- Time from ICU admission to measurement (in minutes)
-    -- Note: Can be NEGATIVE if measurement was taken before admission
+    -- Can be NEGATIVE (measured before ICU admission, within -6h window)
+    -- or POSITIVE (measured during ICU stay, earliest by charttime)
     DATE_DIFF('second', ie.intime, pm.charttime) / 60.0 AS potassium_first_minutes_from_intime
 
 FROM icustays ie
