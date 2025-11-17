@@ -1,14 +1,14 @@
 -- ===============================================================================
--- MIMIC-III DuckDB: First Triglycerides per ICU Stay
+-- MIMIC-III DuckDB: Closest Triglycerides per ICU Stay
 -- ===============================================================================
--- This query creates a table with the first triglycerides measurement for each
--- ICU stay in the MIMIC-III database, optimized for DuckDB.
+-- This query creates a table with the closest triglycerides measurement to
+-- ICU admission for each ICU stay in the MIMIC-III database, optimized for DuckDB.
 --
 -- The table includes:
---   - First triglycerides value (mg/dL)
+--   - Closest triglycerides value (mg/dL)
 --   - Timestamp of the measurement
 --   - ITEMID used (for tracking measurement source)
---   - Minutes from ICU admission to measurement
+--   - Minutes from ICU admission to measurement (can be negative if before)
 --
 -- ITEMID Configuration:
 --   To modify which ITEMIDs are considered for triglycerides, edit the list
@@ -18,8 +18,7 @@
 --   - Uses TABLE (not VIEW) for better performance and reusability
 --   - No filters by default - includes all ICU stays for maximum flexibility
 --   - Tracks ITEMID to identify measurement source
---   - NULL values indicate no triglycerides measurement during ICU stay
---   - Allows measurements from 6 hours BEFORE admission (captures baseline labs)
+--   - NULL values indicate no triglycerides measurement during hospital stay
 --   - Uses labevents table (laboratory values, not vital signs)
 --   - Part of lipid panel series (see also: Total Chol, HDL, LDL tables)
 --
@@ -27,7 +26,25 @@
 --   - Each ICU stay is analyzed independently
 --   - One patient can have multiple hospital admissions
 --   - One hospital admission can have multiple ICU stays
---   - We find the "first" measurement relative to EACH ICU stay's admission time
+--   - We find the "closest" measurement to EACH ICU stay's admission time
+--
+-- DECISION: Closest Within Hospital Admission (NOT ±6 Hour Window)
+--   Unlike routine labs (creatinine, BUN, potassium) which use ±6 hour window
+--   around ICU admission, lipid panels use "closest measurement within the
+--   hospital admission" because:
+--
+--   Rationale:
+--   - Lipid panels are NOT routine ICU labs (measured infrequently)
+--   - Often drawn days before ICU transfer (on floor/ED, not in ICU)
+--   - Critical illness affects lipids over days, not hours
+--   - A lipid panel from 2 days before ICU is still clinically relevant
+--   - Maximizes data completeness while maintaining clinical relevance
+--
+--   Implementation:
+--   - Join on hadm_id (hospital admission) instead of just subject_id
+--   - Order by absolute distance from ICU admission (closest = smallest |time difference|)
+--   - Bounded to ±7 days to prevent very stale values
+--   - Time offset exposed in output (can be negative if measured before ICU)
 --
 -- CLINICAL CONTEXT:
 --   Triglycerides are a type of fat (lipid) found in blood. High levels increase
@@ -63,19 +80,21 @@ DROP TABLE IF EXISTS icu_first_triglycerides;
 
 CREATE TABLE icu_first_triglycerides AS
 WITH trig_measurements AS (
-    -- Extract all triglycerides measurements with temporal ordering per ICU stay
+    -- Extract all triglycerides measurements, ordered by distance from ICU admission
     SELECT
         ie.icustay_id,
         le.charttime,
         le.itemid,
         le.valuenum,
+        -- Calculate time difference from ICU admission (can be negative if before)
+        DATE_DIFF('second', ie.intime, le.charttime) AS seconds_from_intime,
         ROW_NUMBER() OVER (
             PARTITION BY ie.icustay_id    -- Each ICU stay analyzed independently
-            ORDER BY le.charttime          -- Earliest by time
+            ORDER BY ABS(DATE_DIFF('second', ie.intime, le.charttime))  -- Closest by absolute distance
         ) AS rn
     FROM icustays ie
     INNER JOIN labevents le
-        ON ie.subject_id = le.subject_id
+        ON ie.hadm_id = le.hadm_id  -- Join at HOSPITAL ADMISSION level (not just subject_id)
     WHERE le.itemid IN (
         -- =====================================================================
         -- EDIT THIS LIST to configure which ITEMIDs to include
@@ -96,9 +115,10 @@ WITH trig_measurements AS (
     -- =========================================================================
     -- TIME WINDOW - Edit to adjust temporal filtering
     -- =========================================================================
-    -- Allow measurements from 6 hours BEFORE ICU admission to capture baseline
-    -- This is clinically relevant as labs are often drawn pre-admission
-    AND le.charttime >= ie.intime - INTERVAL '6' HOUR
+    -- Search within ±7 days of ICU admission to prevent very stale values
+    -- Much wider than routine labs (±6h) because lipids are measured infrequently
+    AND le.charttime >= ie.intime - INTERVAL '7' DAY
+    AND le.charttime <= ie.intime + INTERVAL '7' DAY
     -- =========================================================================
 )
 SELECT
@@ -107,19 +127,20 @@ SELECT
     ie.hadm_id,
     ie.intime AS icu_intime,
 
-    -- First triglycerides measurement
+    -- Closest triglycerides measurement (within hospital admission)
     tm.valuenum AS triglycerides_first,
     tm.charttime AS triglycerides_first_charttime,
     tm.itemid AS triglycerides_first_itemid,
 
     -- Time from ICU admission to measurement (in minutes)
-    -- Note: Can be NEGATIVE if measurement was taken before admission
-    DATE_DIFF('second', ie.intime, tm.charttime) / 60.0 AS triglycerides_first_minutes_from_intime
+    -- IMPORTANT: Can be NEGATIVE (measured before ICU) or POSITIVE (measured after ICU)
+    -- This is different from routine labs which are typically within ±6 hours
+    tm.seconds_from_intime / 60.0 AS triglycerides_first_minutes_from_intime
 
 FROM icustays ie
 LEFT JOIN trig_measurements tm
     ON ie.icustay_id = tm.icustay_id
-    AND tm.rn = 1  -- Only the first measurement (earliest by charttime)
+    AND tm.rn = 1  -- Only the closest measurement (by absolute time distance)
 ORDER BY ie.icustay_id;
 
 
@@ -156,15 +177,19 @@ ORDER BY ie.icustay_id;
 -- GROUP BY triglycerides_first_itemid
 -- ORDER BY n_stays DESC;
 
--- Timing analysis: When are first triglycerides measurements typically taken?
+-- Timing analysis: When are closest triglycerides measurements typically taken?
+-- Note: This shows the temporal distribution relative to ICU admission
+-- Negative values = measured BEFORE ICU admission
 -- SELECT
 --     CASE
---         WHEN triglycerides_first_minutes_from_intime < -60 THEN 'More than 1h before admission'
---         WHEN triglycerides_first_minutes_from_intime < 0 THEN 'Within 1h before admission'
---         WHEN triglycerides_first_minutes_from_intime <= 60 THEN 'Within 1h after admission'
---         WHEN triglycerides_first_minutes_from_intime <= 360 THEN 'Within 6h after admission'
---         WHEN triglycerides_first_minutes_from_intime <= 1440 THEN 'Within 24h after admission'
---         ELSE 'After 24h'
+--         WHEN triglycerides_first_minutes_from_intime < -4320 THEN 'More than 3 days before ICU'
+--         WHEN triglycerides_first_minutes_from_intime < -1440 THEN '1-3 days before ICU'
+--         WHEN triglycerides_first_minutes_from_intime < -360 THEN '6-24 hours before ICU'
+--         WHEN triglycerides_first_minutes_from_intime < 0 THEN 'Within 6h before ICU'
+--         WHEN triglycerides_first_minutes_from_intime <= 360 THEN 'Within 6h after ICU'
+--         WHEN triglycerides_first_minutes_from_intime <= 1440 THEN '6-24 hours after ICU'
+--         WHEN triglycerides_first_minutes_from_intime <= 4320 THEN '1-3 days after ICU'
+--         ELSE 'More than 3 days after ICU'
 --     END AS timing_category,
 --     COUNT(*) AS n_stays,
 --     ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) AS pct
