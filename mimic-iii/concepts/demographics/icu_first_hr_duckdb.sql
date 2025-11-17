@@ -41,9 +41,8 @@ WITH hr_measurements AS (
         -- =====================================================================
         -- EDIT THIS LIST to configure which ITEMIDs to include
         -- =====================================================================
-        222,        -- Heart Rate (check D_ITEMS for label)
+        211,        -- Heart Rate (CareVue)
         220045      -- Heart Rate (MetaVision)
-        -- Note: Common alternative ITEMID is 211 (CareVue Heart Rate)
         -- =====================================================================
     )
     -- Value range filter: physiologically plausible heart rates (0-300 bpm)
