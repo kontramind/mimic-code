@@ -101,6 +101,9 @@ WITH bp_measurements AS (
         -- Value range filter: 0 < SBP < 400 mmHg
         AND ce.valuenum > 0
         AND ce.valuenum < 400
+        -- TIME WINDOW - ROUTINE vital sign pattern
+        AND ce.charttime >= ie.intime - INTERVAL '6' HOUR
+        AND ce.charttime <= ie.outtime
 
     UNION ALL
 
@@ -143,6 +146,9 @@ WITH bp_measurements AS (
         -- Value range filter: 0 < DBP < 300 mmHg
         AND ce.valuenum > 0
         AND ce.valuenum < 300
+        -- TIME WINDOW - ROUTINE vital sign pattern
+        AND ce.charttime >= ie.intime - INTERVAL '6' HOUR
+        AND ce.charttime <= ie.outtime
 )
 -- ====================================================================
 -- PIVOT: Convert rows to columns (one row per ICU stay)

@@ -55,6 +55,12 @@ WITH resprate_measurements AS (
     -- Filters out data entry errors and artifacts
     AND ce.valuenum > 0
     AND ce.valuenum < 70
+    -- =========================================================================
+    -- TIME WINDOW - ROUTINE vital sign pattern
+    -- =========================================================================
+    AND ce.charttime >= ie.intime - INTERVAL '6' HOUR  -- Capture pre-ICU measurements
+    AND ce.charttime <= ie.outtime                     -- Bound to ICU stay
+    -- =========================================================================
 )
 SELECT
     ie.icustay_id,
