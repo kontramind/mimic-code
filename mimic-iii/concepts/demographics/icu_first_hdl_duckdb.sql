@@ -28,22 +28,22 @@
 --   - One hospital admission can have multiple ICU stays
 --   - We find the "closest" measurement to EACH ICU stay's admission time
 --
--- DECISION: Closest Within Hospital Admission (NOT ±6 Hour Window)
---   Unlike routine labs (creatinine, BUN, potassium) which use ±6 hour window
---   around ICU admission, lipid panels use "closest measurement within the
---   hospital admission" because:
+-- DECISION: Time Window from "intime - 7 days" to "outtime" (ICU Stay Bounded)
+--   HDL is a SPARSE LAB, measured infrequently as part of lipid panel.
+--   We use a bounded window specific to each ICU stay:
 --
 --   Rationale:
---   - Lipid panels are NOT routine ICU labs (measured infrequently)
---   - Often drawn days before ICU transfer (on floor/ED, not in ICU)
---   - Critical illness affects lipids over days, not hours
---   - A lipid panel from 2 days before ICU is still clinically relevant
---   - Maximizes data completeness while maintaining clinical relevance
+--   - We want the ICU admission baseline (or recent preceding value)
+--   - Start: intime - 7 days captures recent measurements (ED, floor, outpatient)
+--   - End: outtime ensures we only capture labs from THIS ICU stay, preventing contamination
+--   - Without outtime bound, joining on subject_id could capture labs from future ICU stays
+--   - This provides clean temporal boundaries for each ICU episode
+--   - 7 days is clinically appropriate (lipids relatively stable over days)
 --
 --   Implementation:
---   - Join on hadm_id (hospital admission) instead of just subject_id
---   - Order by absolute distance from ICU admission (closest = smallest |time difference|)
---   - Bounded to ±7 days to prevent very stale values
+--   - Join on subject_id (patient level - captures all measurements)
+--   - Order by absolute distance from intime (closest = smallest |time difference|)
+--   - Bounded to [intime - 7d, outtime] to prevent inter-stay contamination
 --   - Time offset exposed in output (can be negative if measured before ICU)
 --
 -- CLINICAL CONTEXT:
@@ -85,7 +85,7 @@ WITH hdl_measurements AS (
         ) AS rn
     FROM icustays ie
     INNER JOIN labevents le
-        ON ie.hadm_id = le.hadm_id  -- Join at HOSPITAL ADMISSION level (not just subject_id)
+        ON ie.subject_id = le.subject_id  -- Join at PATIENT level (all measurements)
     WHERE le.itemid IN (
         -- =====================================================================
         -- EDIT THIS LIST to configure which ITEMIDs to include
@@ -105,10 +105,13 @@ WITH hdl_measurements AS (
     -- =========================================================================
     -- TIME WINDOW - Edit to adjust temporal filtering
     -- =========================================================================
-    -- Search within ±7 days of ICU admission to prevent very stale values
-    -- Much wider than routine labs (±6h) because lipids are measured infrequently
-    AND le.charttime >= ie.intime - INTERVAL '7' DAY
-    AND le.charttime <= ie.intime + INTERVAL '7' DAY
+    -- IMPORTANT: Bounded to specific ICU stay to prevent contamination
+    AND le.charttime >= ie.intime - INTERVAL '7' DAY  -- Start: 7 days before ICU admission
+    AND le.charttime <= ie.outtime                    -- End: ICU discharge (prevents future stay contamination)
+    -- This ensures we capture:
+    --   1. Recent pre-ICU measurements (ED, floor, outpatient within 7 days)
+    --   2. Measurements during ICU stay
+    --   3. ONLY from THIS specific ICU stay (no contamination from future stays)
     -- =========================================================================
 )
 SELECT
