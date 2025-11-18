@@ -37,15 +37,16 @@
 --   Rationale:
 --   - NT-proBNP is NOT a routine ICU lab (measured infrequently)
 --   - Typically ordered when heart failure is suspected or being monitored
---   - Often drawn in ED or on floor before ICU transfer
+--   - Often drawn in ED or on floor before ICU transfer (can be days before)
 --   - Values remain relatively stable over days (not hours)
---   - A measurement from 1-2 days before ICU is still clinically relevant
+--   - Any measurement during the hospitalization is clinically relevant
+--   - Uses natural boundaries (hospital admission) rather than arbitrary time window
 --   - Maximizes data completeness while maintaining clinical relevance
 --
 --   Implementation:
 --   - Join on hadm_id (hospital admission) instead of just subject_id
 --   - Order by absolute distance from ICU admission (closest = smallest |time difference|)
---   - Bounded to ±7 days to prevent very stale values
+--   - Bounded to hospital admission window (admittime to dischtime)
 --   - Time offset exposed in output (can be negative if measured before ICU)
 --
 -- CLINICAL CONTEXT:
@@ -91,6 +92,8 @@ WITH ntprobnp_measurements AS (
             ORDER BY ABS(DATE_DIFF('second', ie.intime, le.charttime))  -- Closest by absolute distance
         ) AS rn
     FROM icustays ie
+    INNER JOIN admissions adm
+        ON ie.hadm_id = adm.hadm_id  -- Get hospital admission boundaries
     INNER JOIN labevents le
         ON ie.hadm_id = le.hadm_id  -- Join at HOSPITAL ADMISSION level (not just subject_id)
     WHERE le.itemid IN (
@@ -112,10 +115,11 @@ WITH ntprobnp_measurements AS (
     -- =========================================================================
     -- TIME WINDOW - Edit to adjust temporal filtering
     -- =========================================================================
-    -- Search within ±7 days of ICU admission to prevent very stale values
-    -- Much wider than routine labs (±6h) because NT-proBNP is measured infrequently
-    AND le.charttime >= ie.intime - INTERVAL '7' DAY
-    AND le.charttime <= ie.intime + INTERVAL '7' DAY
+    -- Use hospital admission boundaries (natural, clinically meaningful window)
+    -- Captures any NT-proBNP measured during the hospitalization, whether in ED,
+    -- floor, or ICU - all are relevant to understanding cardiac status at ICU admission
+    AND le.charttime >= adm.admittime
+    AND le.charttime <= adm.dischtime
     -- =========================================================================
 )
 SELECT
@@ -176,7 +180,9 @@ ORDER BY ie.icustay_id;
 
 -- Timing analysis: When are closest NT-proBNP measurements typically taken?
 -- Note: This shows the temporal distribution relative to ICU admission
--- Negative values = measured BEFORE ICU admission
+-- Negative values = measured BEFORE ICU admission (e.g., in ED or on floor)
+-- Positive values = measured AFTER ICU admission (during ICU stay)
+-- All measurements are within the hospital admission window
 -- SELECT
 --     CASE
 --         WHEN ntprobnp_first_minutes_from_intime < -4320 THEN 'More than 3 days before ICU'
