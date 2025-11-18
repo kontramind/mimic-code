@@ -19,7 +19,8 @@
 --   - No filters by default - includes all ICU stays for maximum flexibility
 --   - Tracks ITEMID to identify measurement source
 --   - NULL values indicate no respiratory rate measurement during ICU stay
---   - Focuses on "Total" respiratory rate (spontaneous + ventilator-assisted breaths)
+--   - Includes both "Total" (spontaneous + ventilator) and spontaneous-only respiratory rates
+--   - ITEMID tracked to distinguish between measurement types
 --
 -- Unit of Analysis: ICU stays (icustay_id)
 -- ===============================================================================
@@ -43,9 +44,11 @@ WITH resprate_measurements AS (
         -- EDIT THIS LIST to configure which ITEMIDs to include
         -- =====================================================================
         615,        -- Resp Rate (Total) (CareVue)
+        618,        -- Respiratory Rate (CareVue)
+        220210,     -- Respiratory Rate (MetaVision)
         224690      -- Respiratory Rate (Total) (MetaVision)
         -- Note: "Total" includes both spontaneous and ventilator-assisted breaths
-        -- Alternative ITEMIDs: 618 (CareVue), 220210 (MetaVision) - spontaneous only
+        -- Non-total ITEMIDs (618, 220210) capture spontaneous breaths only
         -- =====================================================================
     )
     -- Value range filter: physiologically plausible respiratory rates (0-70 breaths/min)
