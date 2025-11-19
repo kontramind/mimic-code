@@ -26,6 +26,7 @@
 --   hadm_id                 : Current hospital admission
 --   icu_intime              : ICU admission timestamp
 --   icu_outtime             : ICU discharge timestamp
+--   icu_los_days            : Length of stay in ICU (days)
 --
 --   FORWARD-LOOKING (predict future readmission):
 --   next_icustay_id         : Next ICU stay ID (if any)
@@ -92,6 +93,9 @@ SELECT
     hadm_id,
     icu_intime,
     icu_outtime,
+
+    -- Length of stay in ICU (days)
+    DATE_DIFF('second', icu_intime, icu_outtime) / 24.0 / 60.0 / 60.0 AS icu_los_days,
 
     -- ====================================================================
     -- FORWARD-LOOKING VARIABLES (Predict: "Will this patient return?")
