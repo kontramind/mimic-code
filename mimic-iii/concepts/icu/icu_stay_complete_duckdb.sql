@@ -249,6 +249,37 @@ ORDER BY id.icustay_id;
 -- GROUP BY icu_mortality_flag;
 -- Should show: flag=1 matches expected_count, flag=0 has expected_count=0
 
+-- Example 3d: Data quality check for length of stay consistency
+-- Validates that los_icu matches outtime - intime
+-- SELECT
+--     COUNT(*) as total_stays,
+--     SUM(CASE
+--         WHEN ABS(los_icu - DATE_DIFF('day', icu_intime, icu_outtime)) < 0.01
+--         THEN 1 ELSE 0
+--     END) as consistent_los,
+--     SUM(CASE
+--         WHEN ABS(los_icu - DATE_DIFF('day', icu_intime, icu_outtime)) >= 0.01
+--         THEN 1 ELSE 0
+--     END) as inconsistent_los,
+--     ROUND(100.0 * SUM(CASE
+--         WHEN ABS(los_icu - DATE_DIFF('day', icu_intime, icu_outtime)) < 0.01
+--         THEN 1 ELSE 0
+--     END) / COUNT(*), 2) as pct_consistent
+-- FROM icu_stay_complete
+-- WHERE icu_outtime IS NOT NULL;
+-- Should show close to 100% consistency
+
+-- Example 3e: Check for temporal ordering violations
+-- Ensures intime <= outtime and other temporal constraints
+-- SELECT
+--     COUNT(*) as total_stays,
+--     SUM(CASE WHEN icu_outtime < icu_intime THEN 1 ELSE 0 END) as outtime_before_intime,
+--     SUM(CASE WHEN dod IS NOT NULL AND dod < icu_intime THEN 1 ELSE 0 END) as death_before_icu_admission,
+--     SUM(CASE WHEN los_icu < 0 THEN 1 ELSE 0 END) as negative_los
+-- FROM icu_stay_complete
+-- WHERE icu_outtime IS NOT NULL;
+-- All violation counts should be 0 (except death_before_icu for subsequent stays)
+
 -- Example 4: Check data completeness by variable
 -- SELECT
 --     COUNT(*) as total_icu_stays,
