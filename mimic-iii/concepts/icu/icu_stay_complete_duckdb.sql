@@ -9,6 +9,7 @@
 -- CLINICAL PURPOSE:
 -- This table provides a complete clinical profile for each ICU stay by combining:
 -- - Patient demographics (age, ethnicity, admission type)
+-- - Mortality indicators (hospital and ICU-level mortality)
 -- - Readmission risk indicators
 -- - First vital signs (heart rate, blood pressure, respiratory rate)
 -- - First critical lab values (NT-proBNP, creatinine, BUN, potassium, cholesterol)
@@ -60,6 +61,11 @@
 --   leads_to_readmission_30d    : Binary (1 = patient readmitted to ICU within 30 days after discharge)
 --   is_readmission_30d          : Binary (1 = this stay is a readmission within 30 days)
 --
+--   MORTALITY INDICATORS:
+--   dod                         : Date of death (NULL if alive or after data cutoff)
+--   hospital_expire_flag        : Binary (1 = died during hospital stay, 0 = survived to discharge)
+--   icu_mortality_flag          : Binary (1 = died during ICU stay: intime <= dod <= outtime)
+--
 --   VITAL SIGNS (First measurement):
 --   hr_first                    : Heart rate (bpm)
 --   sysbp_first                 : Systolic blood pressure (mmHg)
@@ -106,6 +112,21 @@ SELECT
     -- ================================================================
     ir.leads_to_readmission_30d,    -- Forward-looking: will this patient return?
     ir.is_readmission_30d,          -- Backward-looking: is this a readmission?
+
+    -- ================================================================
+    -- MORTALITY INDICATORS
+    -- ================================================================
+    id.dod,                         -- Date of death (from patients table)
+    id.hospital_expire_flag,        -- Died during hospital stay (from admissions table)
+
+    -- Computed: died during ICU stay (intime <= dod <= outtime)
+    CASE
+        WHEN id.dod IS NOT NULL
+        AND id.dod >= id.intime
+        AND id.dod <= id.outtime
+        THEN 1
+        ELSE 0
+    END AS icu_mortality_flag,
 
     -- ================================================================
     -- VITAL SIGNS (First measurement)
@@ -202,6 +223,31 @@ ORDER BY id.icustay_id;
 --     AND ir.is_last_icu_stay = 0  -- Only stays that could have readmission
 -- GROUP BY admission_type, ethnicity_grouped
 -- ORDER BY readmission_rate_pct DESC;
+
+-- Example 3b: Mortality analysis by demographics
+-- SELECT
+--     admission_type,
+--     ethnicity_grouped,
+--     COUNT(*) as total_stays,
+--     SUM(hospital_expire_flag) as hospital_deaths,
+--     ROUND(100.0 * SUM(hospital_expire_flag) / COUNT(*), 2) as hospital_mortality_pct,
+--     SUM(icu_mortality_flag) as icu_deaths,
+--     ROUND(100.0 * SUM(icu_mortality_flag) / COUNT(*), 2) as icu_mortality_pct
+-- FROM icu_stay_complete
+-- WHERE age >= 18
+-- GROUP BY admission_type, ethnicity_grouped
+-- ORDER BY icu_mortality_pct DESC;
+
+-- Example 3c: Data quality check for mortality flags
+-- Validates that icu_mortality_flag definition (intime <= dod <= outtime) is correct
+-- SELECT
+--     icu_mortality_flag,
+--     COUNT(*) as n_stays,
+--     SUM(CASE WHEN dod IS NOT NULL AND dod >= icu_intime AND dod <= icu_outtime THEN 1 ELSE 0 END) as expected_count
+-- FROM icu_stay_complete
+-- WHERE icu_outtime IS NOT NULL
+-- GROUP BY icu_mortality_flag;
+-- Should show: flag=1 matches expected_count, flag=0 has expected_count=0
 
 -- Example 4: Check data completeness by variable
 -- SELECT
