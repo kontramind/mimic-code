@@ -12,6 +12,7 @@
 -- - Mortality indicators (hospital and ICU-level mortality)
 -- - Readmission risk indicators
 -- - First vital signs (heart rate, blood pressure, respiratory rate)
+-- - Anthropometrics (height, weight, BMI)
 -- - First critical lab values (NT-proBNP, creatinine, BUN, potassium, cholesterol)
 --
 -- This is designed for:
@@ -33,7 +34,9 @@
 --   9. icu_first_bun           (from icu/icu_first_bun_duckdb.sql)
 --  10. icu_first_potassium     (from icu/icu_first_potassium_duckdb.sql)
 --  11. icu_first_total_cholesterol (from icu/icu_first_total_cholesterol_duckdb.sql)
---  12. admissions              (base MIMIC-III table)
+--  12. icu_first_height        (from icu/icu_first_height_duckdb.sql)
+--  13. icu_first_weight        (from icu/icu_first_weight_duckdb.sql)
+--  14. admissions              (base MIMIC-III table)
 
 -- IMPORTANT NOTES:
 -- 1. "First" measurements = earliest value after ICU admission (within defined time windows)
@@ -71,6 +74,11 @@
 --   sysbp_first                 : Systolic blood pressure (mmHg)
 --   diasbp_first                : Diastolic blood pressure (mmHg)
 --   resprate_first              : Respiratory rate (breaths/min)
+--
+--   ANTHROPOMETRICS:
+--   height_first                : Height (cm) - first measurement
+--   weight_first                : Weight (kg) - first measurement (admission weight prioritized)
+--   bmi                         : Body Mass Index (kg/m^2) - computed from height and weight
 --
 --   LABORATORY VALUES (First/closest measurement):
 --   ntprobnp_first              : NT-proBNP (pg/mL) - cardiac biomarker
@@ -137,6 +145,21 @@ SELECT
     rr.resprate_first,
 
     -- ================================================================
+    -- ANTHROPOMETRICS
+    -- ================================================================
+    ht.height_first,
+    wt.weight_first,
+
+    -- Computed BMI: weight (kg) / height (m)^2
+    CASE
+        WHEN ht.height_first IS NOT NULL
+        AND wt.weight_first IS NOT NULL
+        AND ht.height_first > 0
+        THEN ROUND(wt.weight_first / ((ht.height_first / 100.0) * (ht.height_first / 100.0)), 1)
+        ELSE NULL
+    END AS bmi,
+
+    -- ================================================================
     -- LABORATORY VALUES (First/closest measurement)
     -- ================================================================
     nt.ntprobnp_first,
@@ -171,6 +194,13 @@ LEFT JOIN icu_first_bp bp
 
 LEFT JOIN icu_first_resprate rr
     ON id.icustay_id = rr.icustay_id
+
+-- Join anthropometrics
+LEFT JOIN icu_first_height ht
+    ON id.icustay_id = ht.icustay_id
+
+LEFT JOIN icu_first_weight wt
+    ON id.icustay_id = wt.icustay_id
 
 -- Join laboratory values
 LEFT JOIN icu_first_ntprobnp nt
